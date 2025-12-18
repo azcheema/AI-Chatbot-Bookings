@@ -1,0 +1,54 @@
+{
+  "name": "Tools - Booking Worker",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "3b45b3b6-33a3-4e9d-a072-48620eac1793",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        -736,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// --- CONFIGURATION ---\nconst supabaseUrl = 'https://norddgwsmfrnztzluewn.supabase.co';\nconst supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5vcmRkZ3dzbWZybnp0emx1ZXduIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ4MDE1NDEsImV4cCI6MjA4MDM3NzU0MX0.p9dphFXe0COG0ztfvHdHBfJFJuMaAoJoLskGltSdh-8';\n\n// --- 1. INPUT PARSING ---\nconst root = items[0].json;\nconst input = Object.assign({}, root, root.query || {}, root.body || {});\n\n// Normalize keys\nconst doctor_id = input.doctor_id || input.doctorId;\nconst patient_id_input = input.patient_id || input.patientId;\n// Trim email and handle case sensitivity preparation\nconst raw_email = input.patient_email || input.email;\nconst patient_email = raw_email ? raw_email.trim() : null;\n\nlet start_time = input.start_time || input.startTime || input.date;\nlet end_time = input.end_time || input.endTime;\nconst notes = input.notes || \"\";\n\n// --- 2. VALIDATION & SAFETY CHECKS ---\nconst missing = [];\nif (!doctor_id) missing.push(\"doctor_id\");\nif (!start_time) missing.push(\"start_time\");\nif (!patient_id_input && !patient_email) missing.push(\"patient_id OR patient_email\");\n\nif (missing.length > 0) {\n  return { json: { result: `System Error: Missing required information (${missing.join(', ')}). Please ask the user again.` } };\n}\n\n// Check UUID Format\nconst uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;\nif (!uuidRegex.test(doctor_id)) {\n    return { json: { result: `System Error: Invalid Doctor ID format (\"${doctor_id}\"). The AI must use the UUID from 'get_doctors', not the name.` } };\n}\n\n// --- 3. TIMEZONE & BUSINESS HOURS (Sweden Time) ---\ntry {\n  if (start_time && typeof start_time === 'string' && start_time.length >= 19) {\n    // Force +01:00 (Sweden standard offset) - ideally this should handle DST but this forces consistency\n    start_time = start_time.substring(0, 19) + \"+01:00\";\n  }\n  if (end_time && typeof end_time === 'string' && end_time.length >= 19) {\n    end_time = end_time.substring(0, 19) + \"+01:00\";\n  }\n\n  const dateObj = new Date(start_time);\n  if (isNaN(dateObj.getTime())) throw new Error(\"Invalid Date\");\n\n  const dayName = dateObj.toLocaleDateString('en-US', { timeZone: 'Europe/Stockholm', weekday: 'long' });\n  const hourStr = dateObj.toLocaleTimeString('en-US', { timeZone: 'Europe/Stockholm', hour: 'numeric', hour12: false });\n  const hourVal = parseInt(hourStr, 10);\n\n  if (dayName === 'Saturday' || dayName === 'Sunday') {\n    return { json: { result: `Booking Failed: The clinic is closed on weekends (${dayName}). Please choose Monday-Friday.` } };\n  }\n  if (hourVal < 8 || hourVal >= 17) {\n    return { json: { result: `Booking Failed: The clinic is only open from 08:00 to 17:00. You requested ${hourVal}:00.` } };\n  }\n\n  if (!end_time) {\n    const endDate = new Date(dateObj.getTime() + 30 * 60000); \n    end_time = endDate.toISOString().replace('Z', '').substring(0, 19) + \"+01:00\";\n  }\n} catch (e) {\n  return { json: { result: `System Error: Invalid date format provided ('${start_time}').` } };\n}\n\n// --- 4. DATABASE OPERATIONS ---\ntry {\n  // 4a. CONFLICT CHECK\n  const checkRes = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `${supabaseUrl}/rest/v1/appointments?doctor_id=eq.${doctor_id}&start_time=eq.${encodeURIComponent(start_time)}&status=neq.cancelled&select=id`,\n    headers: { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` }\n  });\n  const existing = typeof checkRes === 'string' ? JSON.parse(checkRes) : checkRes;\n  if (existing.length > 0) {\n     return { json: { result: \"Booking Failed: This time slot is already booked. Please choose another time.\" } };\n  }\n\n  // 4b. PATIENT LOOKUP\n  let final_patient_id = patient_id_input;\n  if (!final_patient_id && patient_email) {\n    // FIX: Use 'ilike' for case-insensitive matching\n    const patientRes = await this.helpers.httpRequest({\n      method: 'GET',\n      url: `${supabaseUrl}/rest/v1/patients?email=ilike.${encodeURIComponent(patient_email)}&select=id`,\n      headers: { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` }\n    });\n    const patients = typeof patientRes === 'string' ? JSON.parse(patientRes) : patientRes;\n    if (!patients.length) {\n       return { json: { result: `Booking Failed: Email '${patient_email}' is not registered. Please register as a patient first.` } };\n    }\n    final_patient_id = patients[0].id;\n  }\n\n  // 4c. INSERT APPOINTMENT\n  const insertRes = await this.helpers.httpRequest({\n    method: 'POST',\n    url: `${supabaseUrl}/rest/v1/appointments`,\n    headers: { \n        'apikey': supabaseKey, \n        'Authorization': `Bearer ${supabaseKey}`,\n        'Prefer': 'return=representation',\n        'Content-Type': 'application/json'\n    },\n    body: JSON.stringify({\n        doctor_id: doctor_id,\n        patient_id: final_patient_id,\n        start_time: start_time,\n        end_time: end_time,\n        notes: notes\n    })\n  });\n  \n  return { json: { result: \"Success! Appointment confirmed and saved to the database.\" } };\n\n} catch (error) {\n  const msg = error.message || JSON.stringify(error);\n  if (msg.includes('violates foreign key')) return { json: { result: \"Database Error: Invalid Doctor ID or Patient ID.\" } };\n  if (msg.includes('violates unique')) return { json: { result: \"Database Error: This slot is already double-booked.\" } };\n  return { json: { result: \"System Error: \" + msg } };\n}"
+      },
+      "id": "74da1231-f3f0-4da7-aac6-7ffdbf99fa7c",
+      "name": "Process Booking",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -512,
+        -320
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Process Booking",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "6eb60d63-59a8-4a25-a1b2-b712fe7e39b2",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "276cbe01a6dd2f4f2e75ce692db9264ce544694cc874c72a2291a3ddd20bb787"
+  },
+  "id": "wPf0Wu9H1Mq4du23",
+  "tags": []
+}

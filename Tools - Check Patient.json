@@ -1,0 +1,129 @@
+{
+  "name": "Tools - Check Patient",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "14275097-1ea0-46dd-a74c-e3aabc2f04a0",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        -944,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Smart Data Normalizer for Patient Check\nconst root = items[0].json;\nconst input = root.query || root;\n\n// Find the email in various possible fields\nconst email = input.email || input.patient_email || input.e_mail;\n\nif (!email) {\n  return {\n    json: {\n      status: \"error\",\n      message: \"I did not receive an email address. Please provide the patient's email.\"\n    }\n  };\n}\n\nreturn {\n  json: {\n    email: email\n  }\n};"
+      },
+      "id": "266efcaa-7f09-4926-8000-350f43bbab26",
+      "name": "Prepare Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -720,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://norddgwsmfrnztzluewn.supabase.co/rest/v1/patients",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "email",
+              "value": "=eq.{{ $json.email }}"
+            },
+            {
+              "name": "select",
+              "value": "id,name"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5vcmRkZ3dzbWZybnp0emx1ZXduIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ4MDE1NDEsImV4cCI6MjA4MDM3NzU0MX0.p9dphFXe0COG0ztfvHdHBfJFJuMaAoJoLskGltSdh-8"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5vcmRkZ3dzbWZybnp0emx1ZXduIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ4MDE1NDEsImV4cCI6MjA4MDM3NzU0MX0.p9dphFXe0COG0ztfvHdHBfJFJuMaAoJoLskGltSdh-8"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "7a4f0ead-ee05-4792-9ddb-824df9d6c4d9",
+      "name": "Lookup Patient",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        -496,
+        -96
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Analyze Result\nconst patients = items.map(item => item.json);\n// Look back to get the searched email\nconst searchedEmail = $('Prepare Data').first().json.email;\n\n// Check if we found a valid patient (id must exist)\nif (patients.length > 0 && patients[0].id) {\n  return {\n    json: {\n      status: \"registered\",\n      patient_id: patients[0].id,\n      name: patients[0].name,\n      message: `User ${patients[0].name} is registered.`\n    }\n  };\n} else {\n  return {\n    json: {\n      status: \"not_registered\",\n      message: `Email ${searchedEmail} not found in database.`\n    }\n  };\n}"
+      },
+      "id": "dac53c04-9464-4c66-8062-d2c7683822a5",
+      "name": "Check Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -272,
+        -96
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Prepare Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Data": {
+      "main": [
+        [
+          {
+            "node": "Lookup Patient",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Patient": {
+      "main": [
+        [
+          {
+            "node": "Check Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "62cd06a2-00cb-4992-bce3-571038d9eff3",
+  "meta": {
+    "instanceId": "276cbe01a6dd2f4f2e75ce692db9264ce544694cc874c72a2291a3ddd20bb787"
+  },
+  "id": "qRA8mGMdOr2qC2lm",
+  "tags": []
+}

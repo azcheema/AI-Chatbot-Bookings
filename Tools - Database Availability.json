@@ -1,0 +1,54 @@
+{
+  "name": "Tools - Database Availability",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "cd47fa46-c5bd-48a6-8acf-27197a6aea86",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        -608,
+        -112
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// --- CONFIGURATION ---\nconst supabaseUrl = 'https://norddgwsmfrnztzluewn.supabase.co';\nconst supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5vcmRkZ3dzbWZybnp0emx1ZXduIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ4MDE1NDEsImV4cCI6MjA4MDM3NzU0MX0.p9dphFXe0COG0ztfvHdHBfJFJuMaAoJoLskGltSdh-8';\n\nconst root = items[0].json;\nconst input = root.query || root;\n\n// 1. Get Date (Default to Today in Sweden time)\nlet queryDate = input.date || input.query_date || input.startDate;\nif (!queryDate) {\n  queryDate = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Stockholm' });\n}\n\n// --- NEW: TIME & DATE CHECKS ---\nconst dateObj = new Date(queryDate);\nconst dayName = dateObj.toLocaleDateString('en-US', { timeZone: 'Europe/Stockholm', weekday: 'long' });\n\n// Get \"Today\" in Sweden for comparison\nconst now = new Date();\nconst todayStr = now.toLocaleDateString('en-CA', { timeZone: 'Europe/Stockholm' });\n\n// Check 1: Past Dates\nif (queryDate < todayStr) {\n   return {\n        json: {\n            status: \"error_past_date\",\n            message: `The date ${queryDate} is in the past. Please choose a future date.`\n        }\n    };\n}\n\n// Check 2: Weekend\nif (dayName === 'Saturday' || dayName === 'Sunday') {\n    return {\n        json: {\n            status: \"closed_weekend\",\n            message: `The clinic is closed on weekends (${dayName}). Please check a date between Monday and Friday.`\n        }\n    };\n}\n// ------------------------------------------\n\n// 2. Get Doctor ID\nconst doctor_id = input.doctor_id || input.doctorId || input.id;\n\n// --- VALIDATION (Soft Fail) ---\nconst uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;\n\nif (!doctor_id || doctor_id.includes('...') || !uuidRegex.test(doctor_id)) {\n  return {\n    json: {\n      status: \"error\",\n      message: `I cannot check availability. The Doctor ID provided (\"${doctor_id}\") is invalid. Please use the 'get_doctors' tool to find the real Doctor ID first.`\n    }\n  };\n}\n\ntry {\n  // 3. Fetch Appointments from Supabase\n  const response = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `${supabaseUrl}/rest/v1/appointments?doctor_id=eq.${doctor_id}&start_time=gte.${queryDate}T00:00:00&end_time=lte.${queryDate}T23:59:59&status=neq.cancelled&select=start_time`,\n    headers: {\n      'apikey': supabaseKey,\n      'Authorization': `Bearer ${supabaseKey}`\n    }\n  });\n\n  // FIX: Check if response is already parsed\n  const bookings = typeof response === 'string' ? JSON.parse(response) : response;\n  \n  if (!Array.isArray(bookings)) {\n      throw new Error(\"Invalid response from database: \" + JSON.stringify(bookings));\n  }\n\n  // 4. Calculate Slots\n  const busyTimes = new Set();\n  bookings.forEach(b => {\n    if (b.start_time) {\n      const timeStr = new Date(b.start_time).toLocaleTimeString('sv-SE', {\n        timeZone: 'Europe/Stockholm',\n        hour: '2-digit',\n        minute: '2-digit'\n      });\n      busyTimes.add(timeStr);\n    }\n  });\n\n  const startHour = 8;\n  const endHour = 17;\n  const slots = [];\n\n  // Calculate current minutes if checking \"Today\"\n  let currentMinutesFromMidnight = -1;\n  if (queryDate === todayStr) {\n    const parts = new Intl.DateTimeFormat('en-GB', {\n        timeZone: 'Europe/Stockholm',\n        hour: 'numeric',\n        minute: 'numeric',\n        hour12: false\n    }).formatToParts(now);\n    const h = parseInt(parts.find(p => p.type === 'hour').value, 10);\n    const m = parseInt(parts.find(p => p.type === 'minute').value, 10);\n    currentMinutesFromMidnight = h * 60 + m;\n  }\n\n  for (let h = startHour; h < endHour; h++) {\n    // :00 slot\n    const slot1 = `${String(h).padStart(2, '0')}:00`;\n    const slot1Mins = h * 60;\n    // Only add if future time (or different day) AND not busy\n    if ((queryDate !== todayStr || slot1Mins > currentMinutesFromMidnight) && !busyTimes.has(slot1)) {\n        slots.push(slot1);\n    }\n    \n    // :30 slot\n    const slot2 = `${String(h).padStart(2, '0')}:30`;\n    const slot2Mins = h * 60 + 30;\n    if ((queryDate !== todayStr || slot2Mins > currentMinutesFromMidnight) && !busyTimes.has(slot2)) {\n        slots.push(slot2);\n    }\n  }\n\n  if (slots.length === 0) {\n    return { json: { message: `I'm sorry, but the doctor is fully booked (or hours have passed) on ${queryDate}.` } };\n  }\n\n  return {\n    json: {\n      date: queryDate,\n      available_slots: slots.join(', '),\n      message: `Available times for ${queryDate}: ${slots.join(', ')}`\n    }\n  };\n\n} catch (error) {\n  return { json: { error: error.message || JSON.stringify(error) } };\n}"
+      },
+      "id": "543c4527-08f5-491b-8932-90b1eaf8c849",
+      "name": "Check Availability",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -384,
+        -112
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Check Availability",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "314cfdf9-ecea-4629-9acb-b7288a7bbf25",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "276cbe01a6dd2f4f2e75ce692db9264ce544694cc874c72a2291a3ddd20bb787"
+  },
+  "id": "cUUQTCoSDOnpufvd",
+  "tags": []
+}

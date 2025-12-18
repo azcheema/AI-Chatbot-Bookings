@@ -1,0 +1,53 @@
+{
+  "name": "Tools - Manage Appointments",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "60b8eb97-f1ca-4260-b9cd-48dec5016764",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        -736,
+        -352
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// --- CONFIGURATION ---\nconst supabaseUrl = 'https://norddgwsmfrnztzluewn.supabase.co';\nconst supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5vcmRkZ3dzbWZybnp0emx1ZXduIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ4MDE1NDEsImV4cCI6MjA4MDM3NzU0MX0.p9dphFXe0COG0ztfvHdHBfJFJuMaAoJoLskGltSdh-8';\n\n// --- INPUT HANDLING ---\nconst root = items[0].json;\nconst input = Object.assign({}, root, root.query || {}, root.body || {});\n\nconst action = input.action || 'list'; // Default to list\nconst raw_email = input.patient_email || input.email;\nconst email = raw_email ? raw_email.trim() : null;\n\n// --- ACTION: LIST APPOINTMENTS ---\nif (action === 'list') {\n  if (!email) return { json: { result: \"Error: Email required to list appointments.\" } };\n\n  try {\n    // 1. Get Patient ID (Case Insensitive)\n    const patientRes = await this.helpers.httpRequest({\n      method: 'GET',\n      url: `${supabaseUrl}/rest/v1/patients?email=ilike.${encodeURIComponent(email)}&select=id,name`,\n      headers: { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` }\n    });\n    const patients = typeof patientRes === 'string' ? JSON.parse(patientRes) : patientRes;\n    \n    if (!patients.length) return { json: { result: \"No patient found with this email.\" } };\n    const patientName = patients[0].name;\n\n    // 2. Get Future Confirmed Appointments\n    const now = new Date().toISOString();\n    const aptRes = await this.helpers.httpRequest({\n      method: 'GET',\n      url: `${supabaseUrl}/rest/v1/appointments?patient_id=eq.${patients[0].id}&start_time=gt.${now}&status=eq.confirmed&select=id,start_time,doctors(name)`,\n      headers: { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` }\n    });\n    \n    const appointments = typeof aptRes === 'string' ? JSON.parse(aptRes) : aptRes;\n    \n    if (appointments.length === 0) {\n      return { json: { result: `Hi ${patientName}, you have no upcoming confirmed appointments.` } };\n    }\n\n    // 3. Format List for AI\n    const list = appointments.map((apt, index) => {\n      const date = new Date(apt.start_time).toLocaleString('en-US', { \n        timeZone: 'Europe/Stockholm', \n        weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'\n      });\n      return `${index + 1}. ${apt.doctors?.name || 'Doctor'} on ${date}`;\n    }).join('\\n');\n\n    return { \n      json: { \n        result: `Here are the active appointments for ${patientName}:\n\n${list}` \n      } \n    };\n\n  } catch (error) { return { json: { result: \"Error listing appointments: \" + error.message } }; }\n}\n\nreturn { json: { result: \"Error: Invalid action. Only 'list' is supported.\" } };"
+      },
+      "id": "c3a44480-5528-4072-8a88-dd33ea50978e",
+      "name": "Manage Appointments",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -512,
+        -352
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Manage Appointments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "b2e0ea3f-1741-406a-8afc-f140cb6c663c",
+  "meta": {
+    "instanceId": "276cbe01a6dd2f4f2e75ce692db9264ce544694cc874c72a2291a3ddd20bb787"
+  },
+  "id": "UPmSQQoPYHBySpdo",
+  "tags": []
+}
